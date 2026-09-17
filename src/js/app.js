@@ -121,12 +121,77 @@
     return res.json();
   }
 
+  // Zones à trame hachurée du règlement PPRN : elles partagent la même
+  // couleur de base que leur équivalent plein (RHi = même rouge que Ri/Rg/
+  // Re, GHi/GHg = mêmes gris que les autres zones), voir ZONE_COLORS dans
+  // adaptation_carbonne/scripts_export_geojson_carbonne.py. Sans motif
+  // visuel distinct, elles seraient donc rendues en aplat identique à leur
+  // équivalent plein sur la carte interactive - indiscernables au premier
+  // coup d'œil, alors que la légende (.legend-swatch-hachuree, voir
+  // src/css/style.css) les distingue déjà par des rayures. À garder en
+  // phase avec ZONE_CSS_VAR (§7, tableau de bord) si la liste évolue.
+  const HACHUREE_ZONE_CODES = new Set(["RHi", "RHg", "GHi", "GHg"]);
+
+  // Motifs SVG (rayures blanches en diagonale, même langage visuel que la
+  // légende) générés au chargement des données plutôt que codés en dur ici,
+  // pour utiliser exactement la couleur déjà portée par chaque zone dans le
+  // GeoJSON (feature.properties.zoneColor) sans la dupliquer. Un identifiant
+  // de motif par code de zone (et non par famille de couleur) pour ne pas
+  // perdre la distinction GHi/GHg, qui utilisent deux gris différents.
+  const hachureFillByZone = {};
+
+  function injectHachurePatterns(zonageFeatures) {
+    const svgNs = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(svgNs, "svg");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    svg.setAttribute("style", "position:absolute;width:0;height:0;overflow:hidden");
+    const defs = document.createElementNS(svgNs, "defs");
+    svg.appendChild(defs);
+
+    const seen = new Set();
+    zonageFeatures.forEach((f) => {
+      const code = f.properties.zoneCode;
+      if (!HACHUREE_ZONE_CODES.has(code) || seen.has(code)) return;
+      seen.add(code);
+
+      const patternId = `hachure-${code}`;
+      const pattern = document.createElementNS(svgNs, "pattern");
+      pattern.setAttribute("id", patternId);
+      pattern.setAttribute("patternUnits", "userSpaceOnUse");
+      pattern.setAttribute("width", "7");
+      pattern.setAttribute("height", "7");
+      pattern.setAttribute("patternTransform", "rotate(45)");
+
+      const bg = document.createElementNS(svgNs, "rect");
+      bg.setAttribute("width", "7");
+      bg.setAttribute("height", "7");
+      bg.setAttribute("fill", f.properties.zoneColor || "#9E9E9E");
+
+      const stripe = document.createElementNS(svgNs, "rect");
+      stripe.setAttribute("width", "2.5");
+      stripe.setAttribute("height", "7");
+      stripe.setAttribute("fill", "#ffffff");
+      stripe.setAttribute("fill-opacity", "0.6");
+
+      pattern.appendChild(bg);
+      pattern.appendChild(stripe);
+      defs.appendChild(pattern);
+      hachureFillByZone[code] = `url(#${patternId})`;
+    });
+
+    document.body.appendChild(svg);
+  }
+
   function styleZonage(feature) {
+    const hachure = hachureFillByZone[feature.properties.zoneCode];
     return {
       color: feature.properties.zoneColor,
       weight: 1,
-      fillColor: feature.properties.zoneColor,
-      fillOpacity: 0.28,
+      fillColor: hachure || feature.properties.zoneColor,
+      // Le motif hachuré a besoin d'une opacité plus élevée que l'aplat pour
+      // rester lisible (ses propres rayures blanches l'éclaircissent déjà).
+      fillOpacity: hachure ? 0.55 : 0.28,
     };
   }
 
@@ -225,45 +290,20 @@
     // pour la même raison : setStyle() mute marker.options en place).
     defaultStyleCache.set(marker, { ...marker.options });
 
-    if (feature.properties.erpMatched) {
-      // Cet ERP est rattaché à un bâtiment identifié (voir
-      // scripts/export_geojson_carbonne.py, rattache_bati_cleabs) : on
-      // ouvre directement la fiche complète de ce bâtiment (régime,
-      // diagnostic de vulnérabilité, niveau refuge...), les mêmes
-      // obligations que celles affichées pour un clic sur son polygone,
-      // plutôt qu'une bulle qui ne renvoyait qu'un lien générique vers le
-      // glossaire.
-      marker.on("click", () => selectBuilding(marker, feature));
-      marker.on("keypress", (e) => {
-        if (e.originalEvent && (e.originalEvent.key === "Enter" || e.originalEvent.key === " ")) {
-          selectBuilding(marker, feature);
-        }
-      });
-    } else {
-      // ERP non rattaché à un bâtiment identifié (structure légère, donnée
-      // source incomplète...) : pas de détail d'obligations disponible, on
-      // garde la bulle minimale avec un renvoi vers le glossaire.
-      marker.bindPopup(renderErpPopup(feature.properties), { maxWidth: 280 });
-    }
-    return marker;
-  }
-
-  function renderErpPopup(p) {
-    const zone = p.zoneCode
-      ? `en zone <strong>${escapeHtml(CONFIG.zoneShortNames[p.zoneCode] || p.zoneCode)}</strong>`
-      : "hors zonage réglementaire";
-    return `
-      <strong>${escapeHtml(p.nom || "Établissement")}</strong><br>
-      ${p.activite ? escapeHtml(p.activite) + "<br>" : ""}
-      ${p.adresse ? `<span class="text-muted">${escapeHtml(p.adresse)}</span><br>` : ""}
-      <span>Situé ${zone} du PPRN ${escapeHtml(CONFIG.riskLabel)}.</span>
-      ${
-        p.classeVulnerabilite
-          ? `<br><span class="text-muted">Sensibilité : ${escapeHtml(p.classeVulnerabilite)}</span>`
-          : ""
+    // Un ERP rattaché à un bâtiment identifié (voir scripts/
+    // export_geojson_carbonne.py, rattache_bati_cleabs) affiche les
+    // obligations de ce bâtiment ; un ERP non rattaché affiche un régime et
+    // un diagnostic recalculés à partir de sa zone et de son type (même
+    // script, build_zone_only_props) : dans les deux cas, le clic ouvre la
+    // fiche complète, comme pour un bâtiment, plutôt qu'une bulle qui ne
+    // renvoyait qu'un lien générique vers le glossaire.
+    marker.on("click", () => selectBuilding(marker, feature));
+    marker.on("keypress", (e) => {
+      if (e.originalEvent && (e.originalEvent.key === "Enter" || e.originalEvent.key === " ")) {
+        selectBuilding(marker, feature);
       }
-      <br><a href="glossaire.html" target="_blank" rel="noopener">Comprendre les obligations ERP</a>
-    `;
+    });
+    return marker;
   }
 
   async function init() {
@@ -275,6 +315,7 @@
         loadJSON(CONFIG.dataUrls.erp),
       ]);
 
+      injectHachurePatterns(zonage.features);
       L.geoJSON(zonage, { style: styleZonage, onEachFeature: onEachZonage }).addTo(layers.zonage);
 
       L.geoJSON(batHors, {
@@ -836,6 +877,16 @@
     // ci-dessus (qui restent la référence pour le contenu réglementaire).
     const techRows = [];
     if (hasValue(eff.zoneCode)) techRows.push(techRow("Code de zone (PPRN)", eff.zoneCode));
+    if (p.nom) {
+      techRows.push(
+        techRow(
+          "Origine des obligations",
+          eff.erpMatched
+            ? "Bâtiment identifié individuellement (BD TOPO)"
+            : "Bâtiment non identifié individuellement : régime et diagnostic recalculés à partir de la zone et du type d'établissement"
+        )
+      );
+    }
     if (hasValue(eff.zonesIntersectees)) techRows.push(techRow("Zones intersectées", eff.zonesIntersectees));
     if (hasValue(eff.refugeCategorie)) techRows.push(techRow("Catégorie niveau refuge", eff.refugeCategorie));
     if (hasValue(eff.empriseFiable)) techRows.push(techRow("Fiabilité de l'emprise au sol", eff.empriseFiable));
@@ -844,7 +895,11 @@
         techRow("Coordonnées (WGS84)", `${eff.__centroid.lat.toFixed(6)}, ${eff.__centroid.lng.toFixed(6)}`)
       );
     }
-    if (hasValue(eff.id)) techRows.push(techRow("Identifiant BD TOPO", eff.id));
+    if (hasValue(eff.id)) {
+      techRows.push(
+        techRow(String(eff.id).startsWith("erp:") ? "Identifiant ERP (BD TOPO)" : "Identifiant BD TOPO", eff.id)
+      );
+    }
 
     if (techRows.length) {
       panelHtml.push(`
