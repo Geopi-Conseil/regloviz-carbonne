@@ -219,12 +219,32 @@
       fillOpacity: 0.95,
       className: "erp-marker",
     });
-    marker.bindPopup(renderErpPopup(feature.properties), { maxWidth: 280 });
     // Nécessaire pour que le tableau de bord (§7) puisse restaurer le style
     // d'origine d'un marqueur ERP après un filtre (voir onEachBatiment, qui
     // fait de même pour les bâtiments dès leur création ; copie superficielle
     // pour la même raison : setStyle() mute marker.options en place).
     defaultStyleCache.set(marker, { ...marker.options });
+
+    if (feature.properties.erpMatched) {
+      // Cet ERP est rattaché à un bâtiment identifié (voir
+      // scripts/export_geojson_carbonne.py, rattache_bati_cleabs) : on
+      // ouvre directement la fiche complète de ce bâtiment (régime,
+      // diagnostic de vulnérabilité, niveau refuge...), les mêmes
+      // obligations que celles affichées pour un clic sur son polygone,
+      // plutôt qu'une bulle qui ne renvoyait qu'un lien générique vers le
+      // glossaire.
+      marker.on("click", () => selectBuilding(marker, feature));
+      marker.on("keypress", (e) => {
+        if (e.originalEvent && (e.originalEvent.key === "Enter" || e.originalEvent.key === " ")) {
+          selectBuilding(marker, feature);
+        }
+      });
+    } else {
+      // ERP non rattaché à un bâtiment identifié (structure légère, donnée
+      // source incomplète...) : pas de détail d'obligations disponible, on
+      // garde la bulle minimale avec un renvoi vers le glossaire.
+      marker.bindPopup(renderErpPopup(feature.properties), { maxWidth: 280 });
+    }
     return marker;
   }
 
@@ -326,15 +346,22 @@
     layer.setStyle(highlightStyle());
     if (layer.bringToFront) layer.bringToFront();
 
-    // Centroïde du bâtiment (coordonnées affichées dans les détails
-    // techniques) : calculé une fois ici, réutilisé par renderBuildingPanel
-    // et par ses ré-appels depuis le bloc de correction (même référence
-    // `feature.properties`).
-    let bounds = null;
+    // Centre du bâtiment ou du marqueur (coordonnées affichées dans les
+    // détails techniques) : calculé une fois ici, réutilisé par
+    // renderBuildingPanel et par ses ré-appels depuis le bloc de correction
+    // (même référence `feature.properties`). Les polygones de bâtiments
+    // exposent getBounds() ; les marqueurs ERP (cercles, voir onEachErp)
+    // exposent getLatLng() : ce même point d'entrée sert donc aussi bien un
+    // clic sur un bâtiment qu'un clic sur un ERP rattaché à un bâtiment
+    // identifié.
+    let center = null;
     if (layer.getBounds) {
-      bounds = layer.getBounds();
-      const c = bounds.getCenter();
-      feature.properties.__centroid = { lat: c.lat, lng: c.lng };
+      center = layer.getBounds().getCenter();
+    } else if (layer.getLatLng) {
+      center = layer.getLatLng();
+    }
+    if (center) {
+      feature.properties.__centroid = { lat: center.lat, lng: center.lng };
     }
 
     renderBuildingPanel(feature.properties);
@@ -342,10 +369,10 @@
 
     // Sur mobile, on centre la carte un peu au-dessus du panneau pour que
     // le bâtiment reste visible pendant que le panneau occupe le bas d'écran.
-    if (bounds && window.innerWidth < 860) {
-      map.flyTo(bounds.getCenter(), Math.max(map.getZoom(), 17), { duration: 0.5 });
-    } else if (bounds) {
-      map.panTo(bounds.getCenter());
+    if (center && window.innerWidth < 860) {
+      map.flyTo(center, Math.max(map.getZoom(), 17), { duration: 0.5 });
+    } else if (center) {
+      map.panTo(center);
     }
   }
 
@@ -642,8 +669,10 @@
 
     if (!p.concerne) {
       panelZoneDot.style.background = "var(--zone-hors)";
-      panelTitle.textContent = "Bâtiment hors zone réglementée";
-      panelSubtitle.textContent = CONFIG.communeName;
+      panelTitle.textContent = p.nom || "Bâtiment hors zone réglementée";
+      panelSubtitle.textContent = p.nom
+        ? "Établissement recevant du public - hors zone réglementée PPRN"
+        : CONFIG.communeName;
       panelBody.innerHTML = `
         <div class="intro-block">
           <p>
@@ -665,17 +694,25 @@
     const eff = applyOverride(p, override);
 
     panelZoneDot.style.background = eff.zoneColor;
-    panelTitle.textContent = CONFIG.zoneShortNames[eff.zoneCode]
-      ? `Zone ${CONFIG.zoneShortNames[eff.zoneCode]}`
-      : "Zone réglementée";
-    panelSubtitle.textContent = eff.zoneLabel || "";
+    panelTitle.textContent =
+      p.nom ||
+      (CONFIG.zoneShortNames[eff.zoneCode] ? `Zone ${CONFIG.zoneShortNames[eff.zoneCode]}` : "Zone réglementée");
+    panelSubtitle.textContent = p.nom ? p.activite || eff.zoneLabel || "" : eff.zoneLabel || "";
 
     const blocks = [];
 
-    // --- Résumé (badge de zone) ---
+    // --- Résumé (badge de zone, et identification de l'établissement pour
+    //     un bâtiment atteint depuis un marqueur ERP - voir onEachErp) ---
     blocks.push(`
       <div class="intro-block">
         ${badge(CONFIG.zoneShortNames[eff.zoneCode] || eff.zoneCode, eff.zoneColor)}
+        ${
+          p.nom
+            ? `<p class="text-muted">${escapeHtml(p.activite || "Établissement recevant du public")}${
+                p.adresse ? " · " + escapeHtml(p.adresse) : ""
+              }</p>`
+            : ""
+        }
         ${eff.overridden ? `<p class="correction-active-note">Cet affichage tient compte de votre déclaration ci-dessous.</p>` : ""}
       </div>
     `);

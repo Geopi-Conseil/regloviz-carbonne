@@ -165,6 +165,40 @@ def build_regime_text(f):
     return " ".join(parts) if parts else None
 
 
+def build_bati_props(f):
+    """Construit le dictionnaire complet des obligations d'un batiment
+    (meme moteur de regles que celui deja applique dans QGIS, ici on ne fait
+    que le traduire en camelCase). Factorise pour etre reutilisable par
+    export_erp() : un ERP rattache a un batiment identifie (champ QGIS
+    rattache_bati_cleabs) doit afficher exactement les memes obligations
+    qu'un clic direct sur le polygone de ce batiment, plutot qu'un resume
+    minimal."""
+    zone_code = clean(f["zone_pprn"])
+    if zone_code is None:
+        return {"id": clean(f["cleabs"]), "concerne": False}
+    return {
+        "id": clean(f["cleabs"]),
+        "zoneCode": zone_code,
+        "zoneLabel": clean(f["zone_pprn_label"]),
+        "zoneColor": clean(f["zone_pprn_color"]),
+        "concerne": True,
+        "regime": build_regime_text(f),
+        "etudeGeotechniqueG2": bool(f["etude_geotechnique_g2"]) if f["etude_geotechnique_g2"] not in (None, NULL) else None,
+        "diagnostic": clean(f["diagnostic_vuln"]),
+        "zoneRefuge": clean(f["zone_refuge"]),
+        "refugeCategorie": clean(f["refuge_categorie"]),
+        "zonesIntersectees": clean(f["zones_intersectees"]),
+        "etagePresent": clean(f["etage_present"]),
+        "etageSource": clean(f["etage_source"]),
+        "typologie": clean(f["typologie_occupation"]),
+        "typologieSource": clean(f["typologie_source"]),
+        "eligibiliteFprnm": clean(f["eligibilite_fprnm"]),
+        "nbLogements": clean(f["nombre_de_logements"]),
+        "hauteurM": clean(f["hauteur"]),
+        "isErp": bool(f["is_erp"]) if f["is_erp"] not in (None, NULL) else None,
+    }
+
+
 def export_bati():
     lyr = find_layer(LAYER_BATI)
     feats_zone, feats_hors = [], []
@@ -178,27 +212,7 @@ def export_bati():
             continue
 
         geom = geom_to_geojson(f.geometry(), ndigits=6, simplify_tol=0.15)
-        props = {
-            "id": clean(f["cleabs"]),
-            "zoneCode": zone_code,
-            "zoneLabel": clean(f["zone_pprn_label"]),
-            "zoneColor": clean(f["zone_pprn_color"]),
-            "concerne": True,
-            "regime": build_regime_text(f),
-            "etudeGeotechniqueG2": bool(f["etude_geotechnique_g2"]) if f["etude_geotechnique_g2"] not in (None, NULL) else None,
-            "diagnostic": clean(f["diagnostic_vuln"]),
-            "zoneRefuge": clean(f["zone_refuge"]),
-            "refugeCategorie": clean(f["refuge_categorie"]),
-            "zonesIntersectees": clean(f["zones_intersectees"]),
-            "etagePresent": clean(f["etage_present"]),
-            "etageSource": clean(f["etage_source"]),
-            "typologie": clean(f["typologie_occupation"]),
-            "typologieSource": clean(f["typologie_source"]),
-            "eligibiliteFprnm": clean(f["eligibilite_fprnm"]),
-            "nbLogements": clean(f["nombre_de_logements"]),
-            "hauteurM": clean(f["hauteur"]),
-            "isErp": bool(f["is_erp"]) if f["is_erp"] not in (None, NULL) else None,
-        }
+        props = build_bati_props(f)
         props = {k: v for k, v in props.items() if v is not None}
         feats_zone.append({"type": "Feature", "geometry": geom, "properties": props})
 
@@ -225,25 +239,45 @@ def export_zonage():
 
 
 def export_erp():
-    """Contrairement aux batiments, la couche ERP de Carbonne ne porte pas
-    encore de champ de zone precalcule : on teste ici l'intersection avec
-    le zonage directement (index spatial), plutot que d'exiger un
-    pre-traitement QGIS supplementaire."""
+    """La couche ERP de Carbonne porte un champ de rattachement a un
+    batiment identifie (rattache_bati_cleabs, calcule en amont dans QGIS par
+    appariement geometrique). Quand ce rattachement existe, on reprend
+    telles quelles les obligations deja calculees pour ce batiment
+    (build_bati_props) : le marqueur ERP doit afficher la meme fiche
+    complete qu'un clic sur le polygone du batiment, pas seulement un
+    resume. Pour les ERP non rattaches (structure legere, donnee source
+    incomplete...), on retombe sur la seule intersection spatiale avec le
+    zonage (index spatial), comme avant : zone et couleur, sans detail
+    d'obligations."""
     lyr_erp = find_layer(LAYER_ERP)
     lyr_zonage = find_layer(LAYER_ZONAGE)
+    lyr_bati = find_layer(LAYER_BATI)
 
     zonage_features = {f.id(): f for f in lyr_zonage.getFeatures()}
     index = QgsSpatialIndex(lyr_zonage.getFeatures())
+    bati_by_cleabs = {clean(f["cleabs"]): f for f in lyr_bati.getFeatures()}
 
     feats = []
     for f in lyr_erp.getFeatures():
         geom = f.geometry()
-        zone_code = None
-        for fid in index.intersects(geom.boundingBox()):
-            zf = zonage_features.get(fid)
-            if zf and zf.geometry().intersects(geom):
-                zone_code = clean(zf["codezonere"])
-                break
+
+        rattache_cleabs = clean(f["rattache_bati_cleabs"])
+        bati_feat = bati_by_cleabs.get(rattache_cleabs) if rattache_cleabs else None
+
+        if bati_feat is not None:
+            props = dict(build_bati_props(bati_feat))
+        else:
+            zone_code = None
+            for fid in index.intersects(geom.boundingBox()):
+                zf = zonage_features.get(fid)
+                if zf and zf.geometry().intersects(geom):
+                    zone_code = clean(zf["codezonere"])
+                    break
+            props = {
+                "zoneCode": zone_code,
+                "zoneColor": ZONE_COLORS.get(zone_code, "#9E9E9E"),
+                "concerne": zone_code is not None,
+            }
 
         type_principal = (clean(f["type_principal"]) or "")
         is_sensible = type_principal in TYPES_ERP_SENSIBLES
@@ -251,17 +285,14 @@ def export_erp():
         if is_sensible:
             classe_vuln = "Établissement sensible (enseignement, santé ou secours)"
 
-        props = {
-            "nom": clean(f["libelle"]),
-            "activite": clean(f["activite_principale"]),
-            "classeVulnerabilite": classe_vuln,
-            "adresse": " ".join(
-                p for p in [clean(f["adresse_numero"]), clean(f["adresse_nom_1"])] if p
-            ) or None,
-            "zoneCode": zone_code,
-            "zoneColor": ZONE_COLORS.get(zone_code, "#9E9E9E"),
-            "concerne": zone_code is not None,
-        }
+        props["erpMatched"] = bati_feat is not None
+        props["nom"] = clean(f["libelle"])
+        props["activite"] = clean(f["activite_principale"])
+        props["classeVulnerabilite"] = classe_vuln
+        props["adresse"] = " ".join(
+            p for p in [clean(f["adresse_numero"]), clean(f["adresse_nom_1"])] if p
+        ) or None
+
         props = {k: v for k, v in props.items() if v is not None}
         geom_out = geom_to_geojson(geom, ndigits=6)
         feats.append({"type": "Feature", "geometry": geom_out, "properties": props})
