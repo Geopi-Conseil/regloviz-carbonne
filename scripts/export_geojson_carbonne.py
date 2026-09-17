@@ -87,12 +87,12 @@ ZONE_COLORS = {
 }
 ZONE_LABELS = {
     "Ri": "Rouge inondation", "Rig": "Rouge inondation + mouvement de terrain",
-    "Rie": "Rouge inondation + recul de berge", "RHi": "Rouge hachuree inondation",
+    "Rie": "Rouge inondation + recul de berge", "RHi": "Rouge hachurée inondation",
     "Rg": "Rouge mouvement de terrain (glissement)", "Re": "Rouge mouvement de terrain (recul de berge)",
-    "RHg": "Rouge hachuree mouvement de terrain", "BFe": "Bleue foncee mouvement de terrain",
-    "BFg": "Bleue foncee mouvement de terrain", "Bi": "Bleue inondation",
-    "Bg": "Bleue mouvement de terrain", "GHi": "Grise hachuree inondation (remblai)",
-    "GHg": "Grise hachuree (aggravation glissement)",
+    "RHg": "Rouge hachurée mouvement de terrain", "BFe": "Bleue foncée mouvement de terrain",
+    "BFg": "Bleue foncée mouvement de terrain", "Bi": "Bleue inondation",
+    "Bg": "Bleue mouvement de terrain", "GHi": "Grise hachurée inondation (remblai)",
+    "GHg": "Grise hachurée (aggravation glissement)",
 }
 INONDATION_ZONES = {"Ri", "RHi", "Bi", "GHi", "Rig", "Rie"}
 TYPES_ERP_SENSIBLES = {"R", "U", "J"}
@@ -159,8 +159,8 @@ def build_regime_text(f):
         parts.append(f"Constructions existantes : {exist}")
     if f["etude_geotechnique_g2"] in (True, "True", "true", 1):
         parts.append(
-            "Etude geotechnique G2 (norme NF P 94-500) obligatoire avant travaux, "
-            "sauf exceptions ponctuelles prevues par le reglement."
+            "Étude géotechnique G2 (norme NF P 94-500) obligatoire avant travaux, "
+            "sauf exceptions ponctuelles prévues par le règlement."
         )
     return " ".join(parts) if parts else None
 
@@ -249,7 +249,7 @@ def export_erp():
         is_sensible = type_principal in TYPES_ERP_SENSIBLES
         classe_vuln = None
         if is_sensible:
-            classe_vuln = "Etablissement sensible (enseignement, sante ou secours)"
+            classe_vuln = "Établissement sensible (enseignement, santé ou secours)"
 
         props = {
             "nom": clean(f["libelle"]),
